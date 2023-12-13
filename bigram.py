@@ -5,9 +5,9 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 32 # how many independent sequences will we process in parallel?
 block_size = 8 # what is the maximum context length for predictions?
-max_iters = 3000
+max_iters = 5000
 eval_interval = 300
-learning_rate = 1e-2
+learning_rate = 1e-3 #lr减小的同时，可以适当的增加max_iters也就是训练的step
 device = 'cuda:5' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 32 # numbers for embedding dimension
@@ -58,7 +58,29 @@ def estimate_loss():
     model.train()
     return out
 
-
+class Head(nn.Module):
+    # 单头注意力机制
+    
+    def __init__(self,head_size) -> None:
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril',torch.tril(torch.ones(block_size, block_size)))
+        
+    def forward(self, x):
+        B,T,C = x.shape
+        k = self.key(x) # (B, T, C)
+        q = self.query(x) # (B, T, C)
+        v = self.value(x) # (B, T, C)
+        wei = q @ k.transpose(-2,-1) * (C ** -0.5) # (B, T, T)
+        # [:T,:T]这个加不加在训练的时候不重要，但是在generate的时候重要
+        wei = wei.masked_fill(self.tril[:T,:T] == 0, float('-inf')) # (B, T, T)
+        wei = F.softmax(wei, dim= -1)
+        v = self.value(x) # (B, T, C)
+        out = wei @ v # (B, T, T)
+        return out
+    
 # super simple bigram model
 class GPTLanguageModel(nn.Module):
 
@@ -67,15 +89,17 @@ class GPTLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size,n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd) #block_size可以理解为sequence_length
+        self.sa_head = Head(n_embd) # self-attention head
         self.lm_head = nn.Linear(n_embd, vocab_size) ## linear to transfer tok_emb ---> logits
 
     def forward(self, idx, targets=None):
-        B,T = idx.shape
+        B,T = idx.shape # T其实就是block_size
 
         # idx and targets are both (B,T) tensor of integers
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
         pos_emb = self.position_embedding_table(torch.arange(T, device = device)) # (T,C) 生成一个一维张量
         x = tok_emb + pos_emb # 使用广播机制相加
+        x = self.sa_head(x)
         logits = self.lm_head(x)
 
         if targets is None:
@@ -91,8 +115,9 @@ class GPTLanguageModel(nn.Module):
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
+            idx_cond = idx[:,-block_size:] #pos_emb由于
             # get the predictions
-            logits, loss = self(idx)
+            logits, loss = self(idx_cond)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
