@@ -16,7 +16,7 @@ n_embd = 32 # numbers for embedding dimension
 torch.manual_seed(1337)
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-with open('LLM_learn/ng-video-lecture-master/input.txt', 'r', encoding='utf-8') as f:
+with open('./input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
 # here are all the unique characters that occur in this text
@@ -66,13 +66,17 @@ class GPTLanguageModel(nn.Module):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size,n_embd)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd) #block_size可以理解为sequence_length
         self.lm_head = nn.Linear(n_embd, vocab_size) ## linear to transfer tok_emb ---> logits
 
     def forward(self, idx, targets=None):
+        B,T = idx.shape
 
         # idx and targets are both (B,T) tensor of integers
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        logits = self.lm_head(tok_emb)
+        pos_emb = self.position_embedding_table(torch.arange(T, device = device)) # (T,C) 生成一个一维张量
+        x = tok_emb + pos_emb # 使用广播机制相加
+        logits = self.lm_head(x)
 
         if targets is None:
             loss = None
