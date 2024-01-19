@@ -8,7 +8,7 @@ block_size = 8 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 300
 learning_rate = 1e-3 #lr减小的同时，可以适当的增加max_iters也就是训练的step
-device = 'cuda:5' if torch.cuda.is_available() else 'cpu'
+device = 'cuda:2' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 32 # numbers for embedding dimension
 # ------------
@@ -16,7 +16,7 @@ n_embd = 32 # numbers for embedding dimension
 torch.manual_seed(1337)
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-with open('./input.txt', 'r', encoding='utf-8') as f:
+with open('LLM_learn/GPT_impement/input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
 # here are all the unique characters that occur in this text
@@ -75,12 +75,41 @@ class Head(nn.Module):
         v = self.value(x) # (B, T, C)
         wei = q @ k.transpose(-2,-1) * (C ** -0.5) # (B, T, T)
         # [:T,:T]这个加不加在训练的时候不重要，但是在generate的时候重要
-        wei = wei.masked_fill(self.tril[:T,:T] == 0, float('-inf')) # (B, T, T)
+        wei = wei.masked_fill(self.tril[:T,:T] == 0, float('-inf')) # (B, T, T) torch.Size([8, 8])
         wei = F.softmax(wei, dim= -1)
-        v = self.value(x) # (B, T, C)
-        out = wei @ v # (B, T, T)
+        v = self.value(x) # (B, T, C) torch.Size([32, 8, 32])
+        out = wei @ v # (B, T, T) torch.Size([8, 8])
         return out
     
+class MultiHeadAttention(nn.Module):
+    """ multiple heads of self-attention in parallel """
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        # self.proj = nn.Linear(head_size * num_heads, n_embd)
+        # self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1) # h(x) 的size torch.Size([32, 8, 8])
+        # out = self.dropout(self.proj(out))
+        return out
+    
+class FeedFoward(nn.Module):
+    """ a simple linear layer followed by a non-linearity """
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            # nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+        
 # super simple bigram model
 class GPTLanguageModel(nn.Module):
 
@@ -89,25 +118,27 @@ class GPTLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size,n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd) #block_size可以理解为sequence_length
-        self.sa_head = Head(n_embd) # self-attention head
+        self.sa_head = MultiHeadAttention(4, n_embd//4) # self-attention head
+        self.ffwd = FeedFoward(n_embd) #前馈网络
         self.lm_head = nn.Linear(n_embd, vocab_size) ## linear to transfer tok_emb ---> logits
 
     def forward(self, idx, targets=None):
         B,T = idx.shape # T其实就是block_size
 
         # idx and targets are both (B,T) tensor of integers
-        tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device = device)) # (T,C) 生成一个一维张量
-        x = tok_emb + pos_emb # 使用广播机制相加
-        x = self.sa_head(x)
-        logits = self.lm_head(x)
+        tok_emb = self.token_embedding_table(idx) # (B,T,C) [32, 8, 32]
+        pos_emb = self.position_embedding_table(torch.arange(T, device = device)) # (T,C) 生成一个一维张量 torch.Size([8, 32])
+        x = tok_emb + pos_emb # 使用广播机制相加 torch.Size([32, 8, 32])
+        x = self.sa_head(x) # torch.Size([32, 8, 32])
+        x = self.ffwd(x) # torch.Size([32, 8, 32])
+        logits = self.lm_head(x) # torch.Size([32, 8, 65])
 
         if targets is None:
             loss = None
         else:
             B, T, C = logits.shape
-            logits = logits.view(B*T, C)
-            targets = targets.view(B*T)
+            logits = logits.view(B*T, C) # torch.Size([256, 65])
+            targets = targets.view(B*T) # torch.Size([256])
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
